@@ -1,0 +1,21 @@
+Choose storage backend
+Pick one: SQLite/file, Redis, or a vector DB (Pinecone/FAISS). Consider encryption/backups.
+Design session schema
+Define session metadata and messages (session_id, user_id, timestamps, tokens). Add summary/embeddings fields if using RAG.
+Implement save/load APIs
+Create atomic save_session() and load_session() endpoints.
+Add periodic checkpoint & shutdown hook
+Periodically persist state and write a final checkpoint on shutdown.
+Implement resume strategy
+Load summary/recent messages on startup and optionally retrieve relevant snippets via embeddings.
+
+Choose storage backend
+Pick one: SQLite/file, Redis, or a vector DB (Pinecone/FAISS). Consider encryption/backups.
+Design session schema
+Define session metadata and messages (session_id, user_id, timestamps, tokens). Add summary/embeddings fields if using RAG.
+Implement save/load APIs
+Create atomic save_session() and load_session() endpoints.
+Add periodic checkpoint & shutdown hook
+Periodically persist state and write a final checkpoint on shutdown.
+Implement resume strategy
+Load summary/recent messages on startup and optionally retrieve relevant snippets via embeddings.

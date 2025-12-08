@@ -1,0 +1,279 @@
+#include <Arduino.h>
+#include <esp_now.h>
+#include <WiFi.h>
+#include "pin_config.h"
+
+// ========================================
+// ESP32 Robot Gateway (RO)
+// Purpose: Bridge between Pi 5 (UART) and Remote ESP32 (ESP-NOW)
+// ========================================
+
+// OTA Configuration (only used for updates, then switches to ESP-NOW)
+#define ENABLE_OTA true
+#define OTA_HOSTNAME "esp32-robot"
+#define OTA_PASSWORD "robotota"
+#define WIFI_SSID ""  // Leave empty to disable WiFi (ESP-NOW only)
+#define WIFI_PASSWORD ""
+
+// Message types
+#define MSG_CMD     0x01  // Command from RC
+#define MSG_STATUS  0x02  // Status telemetry from RO
+#define MSG_HEARTBT 0x03  // Heartbeat/keepalive
+
+// Status codes (8-bit for efficiency)
+#define ST_OK       0x00
+#define ST_BATT_LOW 0x01  // Battery voltage low
+#define ST_TERRAIN  0x02  // Dangerous terrain detected
+#define ST_SIG_LOW  0x03  // Signal level low
+#define ST_OBS_AVD  0x04  // Obstacle avoided
+#define ST_OBS_STP  0x05  // Obstacle stopped robot
+
+// Command message (RC → RO)
+typedef struct {
+  uint8_t msgType;     // MSG_CMD
+  char command[16];    // FWD, BCK, LFT, RGT, STP
+  int16_t value;       // Speed/angle value
+  uint32_t timestamp;  // millis()
+} __attribute__((packed)) CommandMsg;
+
+// Status message (RO → RC)
+typedef struct {
+  uint8_t msgType;     // MSG_STATUS or MSG_HEARTBT
+  uint8_t statusCode;  // ST_* codes
+  float battVolt;      // Battery voltage
+  float speedFPS;      // Speed in feet per second
+  int8_t rssi;         // Signal strength (dBm)
+  uint32_t timestamp;  // millis()
+} __attribute__((packed)) StatusMsg;
+
+CommandMsg incomingCmd;
+StatusMsg outgoingStatus;
+uint8_t remoteMAC[6];  // Store RC MAC for sending status
+bool remotePaired = false;
+
+// ADS1115 ADC
+Adafruit_ADS1115 ads;
+bool adsInitialized = false;
+
+unsigned long lastStatusSend = 0;
+unsigned long lastHeartbeat = 0;
+const unsigned long STATUS_INTERVAL = 100;  // 10Hz (100ms)
+const unsigned long HEARTBEAT_INTERVAL = 1000;  // 1Hz
+unsigned long startTime = 0;  // Track startup time
+
+// Robot state
+float batteryVoltage = 0.0;
+float batteryCurrent = 0.0;
+float currentSpeed = 0.0;
+uint8_t lastStatusCode = ST_OK;
+unsigned long lastSensorRead = 0;
+const unsigned long SENSOR_READ_INTERVAL = 100;  // Read sensors at 10Hz
+
+// Read battery voltage from ADS1115 channel A0
+float readBatteryVoltage() {
+  if (!adsInitialized) return 0.0;
+  
+  int16_t adc0 = ads.readADC_SingleEnded(0);
+  float volts = ads.computeVolts(adc0);
+  return volts * VOLTAGE_DIVIDER_RATIO;  // Scale by 4:1 divider
+}
+
+// Read battery current from ADS1115 channel A1
+float readBatteryCurrent() {
+  if (!adsInitialized) return 0.0;
+  
+  int16_t adc1 = ads.readADC_SingleEnded(1);
+  float volts = ads.computeVolts(adc1);
+  // Scale by divider and convert to current based on sensor (ACS712: 0.185V/A)
+  return (volts * CURRENT_DIVIDER_RATIO - 2.5) / 0.185;
+}
+
+void sendStatus(uint8_t statusCode) {
+  if (!remotePaired) return;
+  
+  outgoingStatus.msgType = (statusCode == ST_OK) ? MSG_HEARTBT : MSG_STATUS;
+  outgoingStatus.statusCode = statusCode;
+  outgoingStatus.battVolt = batteryVoltage;
+  outgoingStatus.speedFPS = currentSpeed;
+  outgoingStatus.rssi = -45;  // Placeholder; ESP-NOW doesn't expose per-peer RSSI
+  outgoingStatus.timestamp = millis() - startTime;
+  
+  esp_now_send(remoteMAC, (uint8_t *)&outgoingStatus, sizeof(outgoingStatus));
+}
+
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+  if (len != sizeof(CommandMsg)) return;
+  
+  memcpy(&incomingCmd, incomingData, sizeof(incomingCmd));
+  
+  // Store RC MAC on first receive for status sending
+  if (!remotePaired) {
+    memcpy(remoteMAC, mac, 6);
+    
+    // Register RC as peer for sending status
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    memcpy(peerInfo.peer_addr, remoteMAC, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    
+    if (esp_now_add_peer(&peerInfo) == ESP_OK) {
+      remotePaired = true;
+      Serial.print("Remote paired: ");
+      for(int i=0; i<6; i++) {
+        Serial.printf("%02X", remoteMAC[i]);
+        if(i<5) Serial.print(":");
+      }
+      Serial.println();
+    } else {
+      Serial.println("Failed to add RC peer");
+    }
+  }
+  
+  Serial.print("RX: ");
+  Serial.print(incomingCmd.command);
+  Serial.print(" val=");
+  Serial.println(incomingCmd.value);
+  
+  // Process command and update robot state
+  if (strcmp(incomingCmd.command, "FWD") == 0) {
+    currentSpeed = incomingCmd.value / 10.0;  // Convert to FPS
+    // TODO: moveForward(incomingCmd.value);
+  } else if (strcmp(incomingCmd.command, "STP") == 0) {
+    currentSpeed = 0.0;
+    // TODO: stopMotors();
+  }
+  // Add more commands: BCK, LFT, RGT
+  
+  // Send immediate ACK status
+  sendStatus(ST_OK);
+}
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  // Silent ACK tracking (enable for debug)
+  // Serial.print("TX: ");
+  // Serial.println(status == ESP_NOW_SEND_SUCCESS ? "OK" : "FAIL");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  startTime = millis();
+  Serial.println("\n=== ESP32 Robot Gateway (RO) ===");
+  
+  // Initialize I2C and ADS1115
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  if (ads.begin(0x48)) {
+    ads.setGain(GAIN_ONE);  // ±4.096V range
+    adsInitialized = true;
+    Serial.println("ADS1115 initialized");
+  } else {
+    Serial.println("ADS1115 not found - using simulated values");
+  }
+  
+  WiFi.mode(WIFI_STA);
+  
+  Serial.print("Robot MAC: ");
+  Serial.println(WiFi.macAddress());
+  
+  // OTA Setup (for firmware updates over WiFi)
+  #if ENABLE_OTA
+  if (strlen(WIFI_SSID) > 0) {
+    Serial.print("Connecting to WiFi for OTA...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println(" connected!");
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      
+      ArduinoOTA.setHostname(OTA_HOSTNAME);
+      ArduinoOTA.setPassword(OTA_PASSWORD);
+      
+      ArduinoOTA.onStart([]() {
+        String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+        Serial.println("Start OTA update: " + type);
+      });
+      ArduinoOTA.onEnd([]() {
+        Serial.println("\nOTA complete");
+      });
+      ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+      });
+      ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+      });
+      
+      ArduinoOTA.begin();
+      Serial.println("OTA ready");
+    } else {
+      Serial.println(" failed. OTA disabled.");
+    }
+  }
+  #endif
+  
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+    return;
+  }
+  
+  esp_now_register_send_cb(OnDataSent);
+  esp_now_register_recv_cb(OnDataRecv);
+  
+  Serial.println("Ready. Waiting for RC...");
+}
+
+void loop() {
+  unsigned long now = millis();
+  
+  // Handle OTA updates
+  #if ENABLE_OTA
+  ArduinoOTA.handle();
+  #endif
+  
+  // Read sensors periodically
+  if (now - lastSensorRead >= SENSOR_READ_INTERVAL) {
+    lastSensorRead = now;
+    batteryVoltage = readBatteryVoltage();
+    batteryCurrent = readBatteryCurrent();
+    
+    // Fallback to simulated value if ADS1115 not available
+    if (!adsInitialized && batteryVoltage == 0.0) {
+      static float simVoltage = 12.4;
+      static unsigned long lastDrain = 0;
+      if (now - lastDrain > 5000) {
+        lastDrain = now;
+        simVoltage -= 0.1;
+        if (simVoltage < 10.0) simVoltage = 12.4;
+      }
+      batteryVoltage = simVoltage;
+    }
+  }
+  
+  // Send heartbeat at 1Hz
+  if (remotePaired && (now - lastHeartbeat >= HEARTBEAT_INTERVAL)) {
+    lastHeartbeat = now;
+    
+    // Check for status changes (simulated - replace with real sensors)
+    if (batteryVoltage < 11.0) {
+      sendStatus(ST_BATT_LOW);
+    } else if (lastStatusCode != ST_OK) {
+      sendStatus(lastStatusCode);
+      lastStatusCode = ST_OK;  // Clear after send
+    } else {
+      sendStatus(ST_OK);  // Normal heartbeat
+    }
+  }
+  
+  delay(10);
+}
