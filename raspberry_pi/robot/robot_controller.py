@@ -281,8 +281,11 @@ class RobotController:
         self.left_speed = 0
         self.right_speed = 0
         
-        # Message history for LCD display (4 lines, newest first)
-        self.message_history = ["", "", "", ""]
+        # LCD line cache to avoid unnecessary updates
+        self.lcd_lines = ["", "", "", ""]
+        self.last_voltages = (None, None, None, None)
+        self.last_event_rx = ""
+        self.last_event_tx = ""
         
         # Update LCD
         if self.lcd:
@@ -296,32 +299,35 @@ class RobotController:
         
         print("Robot Controller Ready")
     
-    def log_message(self, message):
-        """Add a message to the LCD history (newest at top)"""
-        # Truncate message to 20 characters (LCD width)
-        message = message[:20]
-        # Push all messages down and add new one at top
-        self.message_history = [message] + self.message_history[:3]
+    def log_event_rx(self, event):
+        # Abbreviated event received from remote
+        event = event[:20]
+        if event != self.last_event_rx:
+            self.last_event_rx = event
+            self.lcd_lines[2] = event
+
+    def log_event_tx(self, event):
+        # Abbreviated event sent to remote
+        event = event[:20]
+        if event != self.last_event_tx:
+            self.last_event_tx = event
+            self.lcd_lines[3] = event
         
     def handle_motor_command(self, payload):
         """Process motor command from remote"""
         if len(payload) < 6:
             return
-            
         left_speed, right_speed, brake, enable = struct.unpack('<hhBB', payload)
-        
         self.left_speed = left_speed
         self.right_speed = right_speed
-        
-        # Log received command
-        self.log_message(f"RX:L{left_speed:+4d}R{right_speed:+4d}")
-        
+        # Log abbreviated event received
+        self.log_event_rx(f"RX:L{left_speed:+4d}R{right_speed:+4d}")
         if not enable:
             self.motors.enable(False)
-            self.log_message("Motors DISABLED")
+            self.log_event_rx("Motors DISABLED")
         elif brake:
             self.motors.brake()
-            self.log_message("Motors BRAKING")
+            self.log_event_rx("Motors BRAKING")
         else:
             self.motors.enable(True)
             self.motors.set_speed(left_speed, right_speed)
@@ -348,8 +354,8 @@ class RobotController:
         # Format: 4 floats, 1 unsigned byte (status), 1 signed byte (rssi), 1 unsigned int (timestamp)
         payload = struct.pack('<ffffBbI', v1, v2, v3, amps, status_code, rssi, timestamp)
         self.gateway.send_message(STA_TELEMETRY, payload)
-        if int(time.time() * 10) % 10 == 0:
-            self.log_message(f"TX:V1={v1:.2f} V2={v2:.2f} V3={v3:.2f} A={amps:.2f}")
+        # Log abbreviated event sent
+        self.log_event_tx(f"TX:V1={v1:.2f} V2={v2:.2f} V3={v3:.2f} A={amps:.2f}")
         
     def send_heartbeat(self):
         """Send keepalive to ESP32"""
@@ -359,19 +365,33 @@ class RobotController:
         self.gateway.send_message(MSG_HEARTBEAT, payload)
     
     def update_lcd(self):
-        """Update I2C LCD display (20x4 chars) with scrolling message history"""
+        """Update I2C LCD display (20x4 chars) with voltages and event history"""
         if not self.lcd:
             return
-        
         try:
-            # Display 4 lines of message history (newest at top)
-            for line_num in range(4):
-                self.lcd.cursor_pos = (line_num, 0)
-                msg = self.message_history[line_num] if line_num < len(self.message_history) else ""
-                # Pad to 20 chars to clear any previous text
-                self.lcd.write_string(f"{msg:<20}")
-        except Exception as e:
-            # Don't crash if LCD has issues
+            # Line 0: Voltages 1,2,3
+            v1, v2, v3, v4 = self.battery.read_all()
+            volt_line = f"1:{v1:.2f} 2:{v2:.2f} 3:{v3:.2f}"
+            if volt_line != self.lcd_lines[0]:
+                self.lcd_lines[0] = volt_line
+                self.lcd.cursor_pos = (0, 0)
+                self.lcd.write_string(f"{volt_line:<20}")
+            # Line 1: Voltage 4
+            volt4_line = f"4:{v4:.2f}"
+            if volt4_line != self.lcd_lines[1]:
+                self.lcd_lines[1] = volt4_line
+                self.lcd.cursor_pos = (1, 0)
+                self.lcd.write_string(f"{volt4_line:<20}")
+            # Line 2: Abbreviated event received
+            if self.lcd_lines[2]:
+                self.lcd.cursor_pos = (2, 0)
+                self.lcd.write_string(f"{self.lcd_lines[2]:<20}")
+            # Line 3: Abbreviated event sent
+            if self.lcd_lines[3]:
+                self.lcd.cursor_pos = (3, 0)
+                self.lcd.write_string(f"{self.lcd_lines[3]:<20}")
+        except Exception:
+            pass
             pass
     
     def run(self):

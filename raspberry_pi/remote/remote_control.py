@@ -145,7 +145,20 @@ class ArrowController:
         r = self.rects()
         s = self.size
 
-        # ...existing code...
+        # UP
+        up = r['up']
+        pygame.draw.rect(screen, DARK_GRAY, up)
+        pygame.draw.rect(screen, WHITE, up, 2)
+        pygame.draw.polygon(screen, WHITE, [
+            (up[0]+s//2, up[1]+s//4), (up[0]+s//4, up[1]+3*s//4), (up[0]+3*s//4, up[1]+3*s//4)
+        ])
+        # DOWN
+        down = r['down']
+        pygame.draw.rect(screen, DARK_GRAY, down)
+        pygame.draw.rect(screen, WHITE, down, 2)
+        pygame.draw.polygon(screen, WHITE, [
+            (down[0]+s//2, down[1]+3*s//4), (down[0]+s//4, down[1]+s//4), (down[0]+3*s//4, down[1]+s//4)
+        ])
         # LEFT
         left = r['left']
         pygame.draw.rect(screen, DARK_GRAY, left)
