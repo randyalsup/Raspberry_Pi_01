@@ -588,13 +588,10 @@ class RemoteControlUI:
             v2 = getattr(self, 'v2', 0.0)
             v3 = getattr(self, 'v3', 0.0)
             amps = getattr(self, 'amps', 0.0)
-            # Display voltages on one line with labels '5V:', '5V:', '12V:'
-            voltages_text = f"5V: {v1:.2f}V   5V: {v2:.2f}V   12V: {v3:.2f}V"
+            # Display voltages and amps in one line, all decimal, matching robot 2004 LCD style
+            voltages_text = f"5V: {v1:.2f}V   5V: {v2:.2f}V   12V: {v3:.2f}V   Amps: {amps:.2f}A"
             voltages_render = self.font_small.render(voltages_text, True, tele_color)
             self.screen.blit(voltages_render, (20, 160))
-            # Display amps below voltages
-            at = self.font_small.render(f"Amps: {amps:.2f}A", True, tele_color)
-            self.screen.blit(at, (20, 185))
 
         if is_conn:
             self.controller.draw(self.screen)
