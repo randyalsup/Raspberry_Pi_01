@@ -3,7 +3,7 @@ class UARTProtocol:
     SYNC = 0xAA
     END = 0x55
 
-    def __init__(self, port='/dev/serial0', baudrate=115200):
+    def __init__(self, port='/dev/spidev0.1', baudrate=115200):
         self.lock = Lock()
         self.ser = None
         if SERIAL_AVAILABLE:
