@@ -12,6 +12,7 @@ import busio
 import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
 import RPi.GPIO as GPIO
+from datetime import datetime
 
 # Try to import I2C LCD library
 try:
@@ -410,7 +411,7 @@ class RobotController:
                 except:
                     pass
 
-APP_VERSION = "0.001"
+APP_VERSION = f"0.001-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 APP_ROLE = "robot"
 
 # ========================================

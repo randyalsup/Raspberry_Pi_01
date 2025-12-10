@@ -1,11 +1,12 @@
 import serial
 import time
+from datetime import datetime
 
 # Update this to match your UART device and baud rate
 UART_PORT = '/dev/serial0'  # or COMx on Windows, or /dev/ttyUSB0
 BAUD_RATE = 115200
 
-APP_VERSION = "0.001"
+APP_VERSION = f"0.001-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 APP_ROLE = "uart_test"
 
 

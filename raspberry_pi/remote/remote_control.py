@@ -174,6 +174,7 @@ import select
 import mmap
 import argparse
 from threading import Lock
+from datetime import datetime
 
 import pygame
 
@@ -657,7 +658,7 @@ class RemoteControlUI:
         pygame.quit()
 
 
-APP_VERSION = "0.001"
+APP_VERSION = f"0.001-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 APP_ROLE = "remote"
 
 if __name__ == "__main__":
