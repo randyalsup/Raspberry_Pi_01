@@ -294,8 +294,8 @@ class RobotController:
             self.lcd.write_string("Robot v1.0 ACTIVE")
             time.sleep(1)  # Show for 1 second
             # Log startup messages
-            self.log_message("Robot v1.0")
-            self.log_message("System READY")
+            self.log_event_rx("Robot v1.0")
+            self.log_event_rx("System READY")
         
         print("Robot Controller Ready")
     
