@@ -5,17 +5,18 @@
 import time
 import board
 import busio
-from adafruit_ads1x15.ads1115 import ADS1115
+import adafruit_ads1x15.ads1115 as ADS
 from adafruit_ads1x15.analog_in import AnalogIn
+
 
 # Initialize I2C bus and ADS1115
 i2c = busio.I2C(board.SCL, board.SDA)
-adc = ADS1115(i2c, address=0x48)
+adc = ADS.ADS1115(i2c, address=0x48)
 
-chan0 = AnalogIn(adc, ADS1115.P0)
-chan1 = AnalogIn(adc, ADS1115.P1)
-chan2 = AnalogIn(adc, ADS1115.P2)
-chan3 = AnalogIn(adc, ADS1115.P3)
+chan0 = AnalogIn(adc, ADS.P0)
+chan1 = AnalogIn(adc, ADS.P1)
+chan2 = AnalogIn(adc, ADS.P2)
+chan3 = AnalogIn(adc, ADS.P3)
 
 print("Starting ADS1115 sampling. Press Ctrl+C to stop.")
 try:
