@@ -589,7 +589,7 @@ class RemoteControlUI:
             v3 = getattr(self, 'v3', 0.0)
             amps = getattr(self, 'amps', 0.0)
             # Display voltages and amps in one line, all decimal, matching robot 2004 LCD style
-            voltages_text = f"5V: {v1:.2f}V   5V: {v2:.2f}V   12V: {v3:.2f}V   Amps: {amps:.2f}A"
+            voltages_text = f"5: {v1:.2f}   5: {v2:.2f}   12: {v3:.2f}   {amps:.2f}"
             voltages_render = self.font_small.render(voltages_text, True, tele_color)
             self.screen.blit(voltages_render, (20, 160))
 

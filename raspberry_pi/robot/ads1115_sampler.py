@@ -1,25 +1,30 @@
 # ads1115_sampler.py
 # Standalone script to sample and print ADS1115 readings for debugging
 
-import time
-try:
-    from Adafruit_ADS1x15 import ADS1115
-except ImportError:
-    print("Adafruit_ADS1x15 library not found. Install with: pip3 install adafruit-ads1x15")
-    exit(1)
 
-adc = ADS1115(address=0x48)
-GAIN = 1
+import time
+import board
+import busio
+from adafruit_ads1x15.ads1115 import ADS1115
+from adafruit_ads1x15.analog_in import AnalogIn
+
+# Initialize I2C bus and ADS1115
+i2c = busio.I2C(board.SCL, board.SDA)
+adc = ADS1115(i2c, address=0x48)
+
+chan0 = AnalogIn(adc, ADS1115.P0)
+chan1 = AnalogIn(adc, ADS1115.P1)
+chan2 = AnalogIn(adc, ADS1115.P2)
+chan3 = AnalogIn(adc, ADS1115.P3)
 
 print("Starting ADS1115 sampling. Press Ctrl+C to stop.")
 try:
     while True:
-        readings = [adc.read_adc(ch, gain=GAIN) for ch in range(4)]
-        # Convert raw readings to voltages (assuming gain=1, 4.096V range, 16-bit ADC)
-        voltages = [r * 4.096 / 32767 for r in readings]
-        # Format like robot 2004 LCD: '5V: x.xxV 5V: x.xxV 12V: x.xxV Amps: x.xxA'
-        # (Assume channels 0,1 = 5V, channel 2 = 12V, channel 3 = Amps sensor)
-        print(f"5V: {voltages[0]:.2f}V   5V: {voltages[1]:.2f}V   12V: {voltages[2]:.2f}V   Amps: {voltages[3]:.2f}A")
+        v1 = chan0.voltage * 4.0
+        v2 = chan1.voltage * 4.0
+        v3 = chan2.voltage * 4.0
+        amps = chan3.voltage
+        print(f"1:{v1:.2f} 2:{v2:.2f} 3:{v3:.2f} 4:{amps:.2f}")
         time.sleep(1)
 except KeyboardInterrupt:
     print("Sampling stopped.")
