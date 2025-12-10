@@ -15,4 +15,7 @@ rsync ${RSYNC_OPTS} ./Raspberry_Pi_01/ "${PI_USER}@${PI_HOST}:${PI_PATH}"
 
 ssh "${PI_USER}@${PI_HOST}" "cd ${PI_PATH} && python3 -m pip install --user -r requirements.txt"
 
+# Optionally update code from git and show commit info
+ssh "${PI_USER}@${PI_HOST}" "cd ${PI_PATH} && git fetch origin && git checkout master && git pull origin master && echo 'Current commit:' && git rev-parse HEAD && git log -1 --oneline"
+
 echo "Deployment finished. You can ssh to the Pi and run: python3 src/main.py"

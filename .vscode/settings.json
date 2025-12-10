@@ -1,6 +1,6 @@
 {
   "telemetry.telemetryLevel": "off",
-  "git.enabled": false,
+  "git.enabled": true,
   "editor.minimap.enabled": false,
   "breadcrumbs.enabled": false,
   "workbench.startupEditor": "none",

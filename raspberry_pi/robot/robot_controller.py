@@ -115,34 +115,26 @@ class BatterySensor:
             i2c = busio.I2C(board.SCL, board.SDA)
             self.ads = ADS.ADS1115(i2c, address=0x48)
             self.ads.gain = 1  # ±4.096V range
-            
-            self.chan0 = AnalogIn(self.ads, ADS.P0)  # Battery voltage
-            self.chan1 = AnalogIn(self.ads, ADS.P1)  # Battery current
-            
-            self.voltage_ratio = 4.0  # 4:1 divider
-            self.current_ratio = 4.0
-            self.current_offset = 2.5  # ACS712 zero point
-            self.current_sensitivity = 0.185  # V/A for ACS712-5A
+            self.chan0 = AnalogIn(self.ads, ADS.P0)  # 5V/4
+            self.chan1 = AnalogIn(self.ads, ADS.P1)  # 5V/4
+            self.chan2 = AnalogIn(self.ads, ADS.P2)  # 12V/4
+            self.chan3 = AnalogIn(self.ads, ADS.P3)  # Amps
             self.available = True
             print("Battery sensor (ADS1115) initialized")
         except Exception as e:
             print(f"Warning: Battery sensor not available: {e}")
             print("Running without battery monitoring")
-        
-    def read_voltage(self):
-        """Read battery voltage (volts)"""
+
+    def read_all(self):
+        """Read all voltages and amps"""
         if not self.available:
-            return 12.0  # Default/placeholder voltage
-        raw_voltage = self.chan0.voltage
-        return raw_voltage * self.voltage_ratio
-        
-    def read_current(self):
-        """Read battery current (amps)"""
-        if not self.available:
-            return 0.5  # Default/placeholder current
-        raw_voltage = self.chan1.voltage
-        scaled_voltage = raw_voltage * self.current_ratio
-        return (scaled_voltage - self.current_offset) / self.current_sensitivity
+            # Defaults: 5V, 5V, 12V, 1A
+            return 5.0, 5.0, 12.0, 1.0
+        v1 = self.chan0.voltage * 4.0
+        v2 = self.chan1.voltage * 4.0
+        v3 = self.chan2.voltage * 4.0
+        amps = self.chan3.voltage  # Assume direct reading for amps
+        return v1, v2, v3, amps
 
 # ========================================
 # Motor Controller (BTS7960)
@@ -251,7 +243,7 @@ class RobotController:
     def __init__(self):
         print("Initializing Robot Controller...")
         
-        # self.gateway = UARTGateway()
+        self.gateway = ESP32Gateway()
         self.battery = BatterySensor()
         self.motors = MotorController()
         
@@ -346,29 +338,24 @@ class RobotController:
         
     def send_telemetry(self):
         """Send sensor telemetry to remote"""
-        voltage = self.battery.read_voltage()
-        current = self.battery.read_current()
-        
-        # TODO: Add actual speed calculation from encoders
+        v1, v2, v3, amps = self.battery.read_all()
         speed_fps = 0.0
         status_code = 0  # OK
         rssi = -45  # Placeholder (negative dBm value)
         timestamp = int(time.time() * 1000)
-        
-        # Format: 3 floats, 1 unsigned byte (status), 1 signed byte (rssi), 1 unsigned int (timestamp)
-        payload = struct.pack('<fffBbI', voltage, current, speed_fps, status_code, rssi, timestamp)
-        # self.gateway.send_message(STA_TELEMETRY, payload)
-        
-        # Log telemetry transmission every 10 sends (once per second)
+        timestamp &= 0xFFFFFFFF
+        # Format: 4 floats, 1 unsigned byte (status), 1 signed byte (rssi), 1 unsigned int (timestamp)
+        payload = struct.pack('<ffffBbI', v1, v2, v3, amps, status_code, rssi, timestamp)
+        self.gateway.send_message(STA_TELEMETRY, payload)
         if int(time.time() * 10) % 10 == 0:
-            self.log_message(f"TX:V{voltage:.1f}A{current:.1f}")
+            self.log_message(f"TX:V1={v1:.2f} V2={v2:.2f} V3={v3:.2f} A={amps:.2f}")
         
     def send_heartbeat(self):
         """Send keepalive to ESP32"""
-        uptime = int(time.time() * 1000)
+        uptime = int(time.time() * 1000) & 0xFFFFFFFF
         health = 0  # Healthy
         payload = struct.pack('<IB', uptime, health)
-        # self.gateway.send_message(MSG_HEARTBEAT, payload)
+        self.gateway.send_message(MSG_HEARTBEAT, payload)
     
     def update_lcd(self):
         """Update I2C LCD display (20x4 chars) with scrolling message history"""
@@ -423,9 +410,13 @@ class RobotController:
                 except:
                     pass
 
+APP_VERSION = "0.001"
+APP_ROLE = "robot"
+
 # ========================================
 # Entry Point
 # ========================================
 if __name__ == '__main__':
+    print(f"App Version: {APP_VERSION} | Role: {APP_ROLE}")
     controller = RobotController()
     controller.run()

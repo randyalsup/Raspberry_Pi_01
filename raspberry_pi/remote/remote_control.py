@@ -1,16 +1,169 @@
-#!/usr/bin/env python3
-"""
-Remote Control UI (new implementation)
+class UARTProtocol:
+    """ESP UART protocol minimal stub."""
+    SYNC = 0xAA
+    END = 0x55
 
-Requirements (kept updated as we progress):
-- Touch Input Control: Reads Linux input events for a Goodix touchscreen; single press triggers one action with debounce.
-- Directional Buttons: On-screen UP/DOWN/LEFT/RIGHT with a center STOP; incremental speed changes per press at 25% up to 100% (4 presses). Each change in speed is ramped up over 2 seconds.
-- Differential Steering: For each LEFT touch, left motor decreases by 10% up to -100%; for RIGHT touch, right motor decreases by 10% up to -100%. Before decrementing either side, if that side is below +100% it increases by 10% toward +100%, then starts decrementing on subsequent presses.
-- Connectivity Gate: Connect to the robot ESP and only show controls and process touches when connection_status contains "Connected".
-- Status + Telemetry: Show signal strength (RSSI) and motor speeds.
-- LCD Messages: Maintain a 4-line message history on I2C LCD (20x4) for TX, errors, and button events.
-- Performance: Use NumPy for fast RGB565 conversion to framebuffer; fallback is functional but slow.
-"""
+    def __init__(self, port='/dev/serial0', baudrate=115200):
+        self.lock = Lock()
+        self.ser = None
+        if SERIAL_AVAILABLE:
+            try:
+                self.ser = serial.Serial(port, baudrate, timeout=0.01)
+            except Exception as e:
+                print(f"Warning: Could not open UART: {e}")
+
+    def crc8(self, data):
+        crc = 0x00
+        for b in data:
+            crc ^= b
+            for _ in range(8):
+                crc = ((crc << 1) ^ 0x07) if (crc & 0x80) else (crc << 1)
+        return crc & 0xFF
+
+    def send_motor_cmd(self, left_speed, right_speed, brake=0, enable=1):
+        if not self.ser:
+            return
+        payload = struct.pack('<hhBB', int(left_speed), int(right_speed), brake, enable)
+        frame_hdr = bytes([self.SYNC, CMD_MOTOR, len(payload)])
+        crc = self.crc8(list(frame_hdr[1:]) + list(payload))
+        frame = frame_hdr + payload + bytes([crc, self.END])
+        with self.lock:
+            self.ser.write(frame)
+
+    def close(self):
+        if self.ser:
+            self.ser.close()
+
+    def receive_telemetry(self, ui=None):
+        """Poll for telemetry message and update UI voltages/amps if found."""
+        if not self.ser:
+            return
+        while self.ser.in_waiting >= 27:  # 4 floats, 1B, 1b, 1I + header
+            # Read until SYNC byte
+            b = self.ser.read(1)
+            if b != bytes([self.SYNC]):
+                continue
+            header = self.ser.read(2)
+            if len(header) < 2:
+                return
+            msg_type, length = header[0], header[1]
+            if msg_type != 0x10 or length != 22:
+                self.ser.read(length + 2)  # skip payload, crc, end
+                continue
+            payload = self.ser.read(22)
+            crc = self.ser.read(1)
+            end = self.ser.read(1)
+            if len(payload) < 22 or end != bytes([self.END]):
+                continue
+            try:
+                v1, v2, v3, amps, status, rssi, timestamp = struct.unpack('<ffffBbI', payload)
+                if ui:
+                    ui.v1 = v1
+                    ui.v2 = v2
+                    ui.v3 = v3
+                    ui.amps = amps
+                    ui.rssi = rssi
+            except Exception as e:
+                print(f"[DEBUG] Telemetry unpack error: {e}")
+                continue
+class ArrowController:
+    """Directional button controller with incremental press behavior."""
+    def __init__(self, center_x, center_y, size):
+        self.cx = center_x
+        self.cy = center_y
+        self.size = size
+        self.stop_radius = size // 3
+        self.debounce_s = 0.15
+        self.last_press_ts = 0
+        # Percent speeds (-100 .. +100)
+        self.fb = 0.0  # forward/back
+        self.lr = 0.0  # left/right
+        self.changed = False
+        print("Button rects:", self.rects())
+        print("Stop radius:", self.stop_radius)
+
+    def rects(self):
+        s = self.size
+        return {
+            'up':   (self.cx - s//2, self.cy - int(1.5*s), s, s),
+            'down': (self.cx - s//2, self.cy + int(0.5*s), s, s),
+            'left': (self.cx - int(1.5*s), self.cy - s//2, s, s),
+            'right':(self.cx + int(0.5*s), self.cy - s//2, s, s),
+            'stop': (self.cx, self.cy)
+        }
+
+    def check(self, x, y):
+        now = time.time()
+        print(f"Checking button for ({x},{y})")
+        print(f"Debounce: {now - self.last_press_ts:.3f}s (threshold {self.debounce_s})")
+        if now - self.last_press_ts < self.debounce_s:
+            print("Debounced: Ignored")
+            return None
+        r = self.rects()
+        # Stop circle first
+        dx = x - r['stop'][0]
+        dy = y - r['stop'][1]
+        if math.hypot(dx, dy) <= self.stop_radius:
+            print("Hit STOP")
+            self.last_press_ts = now
+            return 'stop'
+        for name in ('up', 'down', 'left', 'right'):
+            rx, ry, rw, rh = r[name]
+            print(f"{name}: rect=({rx},{ry},{rw},{rh})")
+            if rx <= x <= rx+rw and ry <= y <= ry+rh:
+                print(f"Hit {name}")
+                self.last_press_ts = now
+                return name
+        print("No button hit")
+        return None
+
+    def handle(self, btn):
+        old_fb, old_lr = self.fb, self.lr
+        # fb: forward/back, lr: left/right
+        if btn == 'stop':
+            self.fb = 0.0
+            self.lr = 0.0
+        elif btn == 'up':
+            # Increase forward speed
+            self.fb = min(100.0, self.fb + 25.0)
+        elif btn == 'down':
+            # Decrease forward speed (or go backward)
+            self.fb = max(-100.0, self.fb - 25.0)
+        elif btn == 'left':
+            # Turn left: decrease left motor (lr negative)
+            self.lr = max(-100.0, self.lr - 25.0)
+        elif btn == 'right':
+            # Turn right: increase right motor (lr positive)
+            self.lr = min(100.0, self.lr + 25.0)
+
+        self.changed = (abs(self.fb - old_fb) > 0.01) or (abs(self.lr - old_lr) > 0.01)
+
+    def values(self):
+        return self.lr/100.0, self.fb/100.0
+
+    def draw(self, screen):
+        r = self.rects()
+        s = self.size
+
+        # ...existing code...
+        # LEFT
+        left = r['left']
+        pygame.draw.rect(screen, DARK_GRAY, left)
+        pygame.draw.rect(screen, WHITE, left, 2)
+        pygame.draw.polygon(screen, WHITE, [
+            (left[0]+s//4, left[1]+s//2), (left[0]+3*s//4, left[1]+s//4), (left[0]+3*s//4, left[1]+3*s//4)
+        ])
+        # RIGHT
+        right = r['right']
+        pygame.draw.rect(screen, DARK_GRAY, right)
+        pygame.draw.rect(screen, WHITE, right, 2)
+        pygame.draw.polygon(screen, WHITE, [
+            (right[0]+3*s//4, right[1]+s//2), (right[0]+s//4, right[1]+s//4), (right[0]+s//4, right[1]+3*s//4)
+        ])
+        # STOP
+        stop = r['stop']
+        pygame.draw.circle(screen, RED, stop, self.stop_radius)
+        pygame.draw.circle(screen, WHITE, stop, self.stop_radius, 2)
 
 import os
 import sys
@@ -107,7 +260,7 @@ class UARTProtocol:
 
 
 class TouchInput:
-    """Non-blocking Linux input reader for touchscreen."""
+    # Non-blocking Linux input reader for touchscreen.
     def __init__(self):
         self.device = None
         self.device_path = None
@@ -153,18 +306,18 @@ class TouchInput:
 
         # Timeout release
         if self.touching and (time.time() - self.last_touch_start) > self.touch_timeout:
+            print(f"[DEBUG] Timeout release: x={self.touch_x} y={self.touch_y}")
             self.touching = False
             self.was_touching = False
             return (self.touch_x, self.touch_y, False)
 
+
         processed = 0
-        while processed < 64:
-            ready, _, _ = select.select([self.device], [], [], 0)
-            if not ready:
-                return None
+        ready = True
+        while ready:
             processed += 1
             data = self.device.read(16)
-            if len(data) < 16:
+            if data is None or len(data) < 16:
                 return None
             try:
                 sec, usec, ev_type, ev_code, ev_val = struct.unpack('llHHi', data)
@@ -174,6 +327,8 @@ class TouchInput:
                     sec, usec, ev_type, ev_code, ev_val = struct.unpack('QQHHi', data + extra)
                 else:
                     return None
+
+            print(f"[DEBUG] Raw event: type={ev_type} code={ev_code} val={ev_val} x={self.touch_x} y={self.touch_y} touching={self.touching}")
 
             if ev_type == 3:  # EV_ABS
                 if ev_code in (0, 53):
@@ -185,63 +340,23 @@ class TouchInput:
             elif ev_type == 1 and ev_code == 330:  # BTN_TOUCH
                 self.touching = ev_val > 0
             elif ev_type == 0:  # EV_SYN
+                print(f"[DEBUG] State change: touching={self.touching} was_touching={self.was_touching} x={self.touch_x} y={self.touch_y}")
                 if self.touching and not self.was_touching:
                     self.was_touching = True
                     self.last_touch_start = time.time()
+                    print(f"[DEBUG] Touch DOWN returned: x={self.touch_x} y={self.touch_y}")
                     return (self.touch_x, self.touch_y, True)
                 if not self.touching and self.was_touching:
                     self.was_touching = False
+                    print(f"[DEBUG] Touch UP returned: x={self.touch_x} y={self.touch_y}")
                     return (self.touch_x, self.touch_y, False)
 
+        print(f"[DEBUG] No event returned after {processed} processed")
         return None
 
     def close(self):
         if self.device:
             self.device.close()
-
-
-class ArrowController:
-    """Directional button controller with incremental press behavior."""
-    def __init__(self, center_x, center_y, size):
-        self.cx = center_x
-        self.cy = center_y
-        self.size = size
-        self.stop_radius = size // 3
-        self.debounce_s = 0.15
-        self.last_press_ts = 0
-
-        # Percent speeds (-100 .. +100)
-        self.fb = 0.0  # forward/back
-        self.lr = 0.0  # left/right
-        self.changed = False
-
-    def rects(self):
-        s = self.size
-        return {
-            'up':   (self.cx - s//2, self.cy - int(1.5*s), s, s),
-            'down': (self.cx - s//2, self.cy + int(0.5*s), s, s),
-            'left': (self.cx - int(1.5*s), self.cy - s//2, s, s),
-            'right':(self.cx + int(0.5*s), self.cy - s//2, s, s),
-            'stop': (self.cx, self.cy)
-        }
-
-    def check(self, x, y):
-        now = time.time()
-        if now - self.last_press_ts < self.debounce_s:
-            return None
-        r = self.rects()
-        # Stop circle first
-        dx = x - r['stop'][0]
-        dy = y - r['stop'][1]
-        if math.hypot(dx, dy) <= self.stop_radius:
-            self.last_press_ts = now
-            return 'stop'
-        for name in ('up', 'down', 'left', 'right'):
-            rx, ry, rw, rh = r[name]
-            if rx <= x <= rx+rw and ry <= y <= ry+rh:
-                self.last_press_ts = now
-                return name
-        return None
 
     def handle(self, btn):
         old_fb, old_lr = self.fb, self.lr
@@ -379,6 +494,12 @@ class RemoteControlUI:
                 pass
 
     def differential_steering(self, x, y):
+        # Differential drive steering logic:
+        # x: left/right (-1.0 to +1.0), y: forward/back (-1.0 to +1.0)
+        # Go straight: both motors same speed
+        # Turn left: left slower, right faster
+        # Turn right: right slower, left faster
+        # Spin: left forward, right backward
         left = y + x
         right = y - x
         m = max(abs(left), abs(right))
@@ -388,6 +509,8 @@ class RemoteControlUI:
         return int(left*1000), int(right*1000)
 
     def update(self):
+        # Poll for telemetry and update voltages/amps
+    #    self.uart.receive_telemetry(self)
         x, y = self.controller.values()
         self.target_left, self.target_right = self.differential_steering(x, y)
         now = time.time()
@@ -444,6 +567,21 @@ class RemoteControlUI:
         self.screen.blit(lt, (20, 130))
         self.screen.blit(rt, (SCREEN_WIDTH - 120, 130))
 
+        # Display voltages and amps if connected
+        if is_conn:
+            # These should be updated from telemetry messages
+            v1 = getattr(self, 'v1', 0.0)
+            v2 = getattr(self, 'v2', 0.0)
+            v3 = getattr(self, 'v3', 0.0)
+            amps = getattr(self, 'amps', 0.0)
+            # Display voltages on one line with labels '5V:', '5V:', '12V:'
+            voltages_text = f"5V: {v1:.2f}V   5V: {v2:.2f}V   12V: {v3:.2f}V"
+            voltages_render = self.font_small.render(voltages_text, True, tele_color)
+            self.screen.blit(voltages_render, (20, 160))
+            # Display amps below voltages
+            at = self.font_small.render(f"Amps: {amps:.2f}A", True, tele_color)
+            self.screen.blit(at, (20, 185))
+
         if is_conn:
             self.controller.draw(self.screen)
             inst = self.font_small.render("Touch to control", True, GRAY)
@@ -482,9 +620,19 @@ class RemoteControlUI:
                 x, y, touching = ev
                 if touching and ("Connected" in self.connection_status):
                     btn = self.controller.check(x, y)
+                    fb_before, lr_before = self.controller.fb, self.controller.lr
                     if btn:
                         self.controller.handle(btn)
-                        self.log(f"BTN: {btn.upper()}")
+                        fb_after, lr_after = self.controller.fb, self.controller.lr
+                        msg = f"Touch: ({x},{y}) Btn: {btn.upper()} FB:{fb_before:.0f}->{fb_after:.0f} LR:{lr_before:.0f}->{lr_after:.0f}"
+                        self.log(msg)
+                        if DEBUG:
+                            print(msg)
+                    else:
+                        msg = f"Touch: ({x},{y}) Btn: NONE"
+                        self.log(msg)
+                        if DEBUG:
+                            print(msg)
                 elif not touching:
                     # Reset any held-touch state if needed (controller has debounce)
                     pass
@@ -509,7 +657,11 @@ class RemoteControlUI:
         pygame.quit()
 
 
-if __name__ == '__main__':
+APP_VERSION = "0.001"
+APP_ROLE = "remote"
+
+if __name__ == "__main__":
+    print(f"App Version: {APP_VERSION} | Role: {APP_ROLE}")
     parser = argparse.ArgumentParser(description='New Remote Control UI')
     parser.add_argument('--debug', action='store_true', help='Enable verbose debug logging')
     args = parser.parse_args()

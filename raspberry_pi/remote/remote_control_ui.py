@@ -23,7 +23,7 @@ from threading import Thread, Lock
 
 # Try to import NumPy for fast RGB565 conversion
         pygame.draw.rect(self.screen, DARK_GRAY, (10, 90, SCREEN_WIDTH - 20, 120), 2)
-    import numpy as np
+    import numpy as np 
     NUMPY_AVAILABLE = True
         tele_color = WHITE if is_connected else DARK_GRAY
         battery_text = self.font_small.render(f"Battery: {self.battery_voltage:.1f}V", True, tele_color)
@@ -144,6 +144,8 @@ class ArrowController:
         # Last touch to debounce
         self.last_touch_time = 0
         self.debounce_time = 0.15  # 150ms between presses
+        # Cache small font once to avoid per-draw allocations
+        self._font_small = pygame.font.Font(None, 20)
         
     def get_button_rects(self):
         """Get the rectangles for each arrow button"""
@@ -316,10 +318,9 @@ class ArrowController:
         pygame.draw.circle(screen, RED, stop_pos, self.stop_radius)
         pygame.draw.circle(screen, WHITE, stop_pos, self.stop_radius, 2)
         
-        # Draw speed indicators as text
-        font = pygame.font.Font(None, 20)
-        fb_text = font.render(f"FB:{self.forward_back_speed:+.1f}%", True, YELLOW)
-        lr_text = font.render(f"LR:{self.left_right_speed:+.1f}%", True, YELLOW)
+        # Draw speed indicators as text (use cached font)
+        fb_text = self._font_small.render(f"FB:{self.forward_back_speed:+.1f}%", True, YELLOW)
+        lr_text = self._font_small.render(f"LR:{self.left_right_speed:+.1f}%", True, YELLOW)
         screen.blit(fb_text, (self.center_x - fb_text.get_width()//2, self.center_y - bs*2))
         screen.blit(lr_text, (self.center_x - lr_text.get_width()//2, self.center_y + bs*1.2))
 
@@ -784,26 +785,20 @@ class RemoteControlUI:
             inst_text = self.font_small.render("Touch to control", True, GRAY)
             self.screen.blit(inst_text, (SCREEN_WIDTH // 2 - inst_text.get_width() // 2, SCREEN_HEIGHT - 30))
         
-        # Copy pygame surface to framebuffer
+        # Copy pygame surface to framebuffer (prefer zero-copy surfarray view)
         if self.fbmmap:
             t_start = time.time()
             
-            # Get raw RGB data and convert to RGB565
-            rgb_data = pygame.image.tostring(self.screen, 'RGB')
-            
             if NUMPY_AVAILABLE:
-                # Fast vectorized RGB888 to RGB565 conversion using NumPy
-                rgb_array = np.frombuffer(rgb_data, dtype=np.uint8)
+                # Zero-copy 3D array view into surface pixels (width x height x 3)
+                pixels3d = pygame.surfarray.pixels3d(self.screen)
                 
-                # Reshape to separate RGB channels
-                pixels = rgb_array.reshape(-1, 3)
-                
-                # Convert RGB888 to RGB565 - single operation on flattened array
-                rgb565 = ((pixels[:, 0].astype(np.uint16) >> 3) << 11) | \
-                         ((pixels[:, 1].astype(np.uint16) >> 2) << 5) | \
-                         (pixels[:, 2].astype(np.uint16) >> 3)
-                
-                # Direct conversion to bytes with correct byte order for framebuffer
+                # Flatten channels and convert RGB888 -> RGB565 with minimal temporaries
+                r = pixels3d[:, :, 0].astype(np.uint16)
+                g = pixels3d[:, :, 1].astype(np.uint16)
+                b = pixels3d[:, :, 2].astype(np.uint16)
+                rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+                # Write to framebuffer (uint16 little-endian)
                 self.fbmmap.seek(0)
                 self.fbmmap.write(rgb565.astype(np.uint16).tobytes())
                 
@@ -811,8 +806,8 @@ class RemoteControlUI:
                 if elapsed_ms > 50:  # Only print if slow
                     print(f"⚠ Frame took {elapsed_ms:.0f}ms")
             else:
-                # Fallback: slower Python loop conversion (WARNING: ~40+ seconds per frame!)
-                print("✗ NumPy not available - display will be VERY slow!")
+                # Fallback: slower path. Avoid extra allocation by reusing buffer.
+                rgb_data = pygame.image.tostring(self.screen, 'RGB')
                 for i in range(0, len(rgb_data), 3):
                     r = rgb_data[i] >> 3      # 5 bits
                     g = rgb_data[i+1] >> 2    # 6 bits
@@ -821,8 +816,6 @@ class RemoteControlUI:
                     idx = (i // 3) * 2
                     self.rgb565_buffer[idx] = rgb565 & 0xFF
                     self.rgb565_buffer[idx + 1] = (rgb565 >> 8) & 0xFF
-                
-                # Write buffer to framebuffer
                 self.fbmmap.seek(0)
                 self.fbmmap.write(self.rgb565_buffer)
         
