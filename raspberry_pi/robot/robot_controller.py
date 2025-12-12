@@ -116,10 +116,10 @@ class BatterySensor:
             i2c = busio.I2C(board.SCL, board.SDA)
             self.ads = ADS.ADS1115(i2c, address=0x48)
             self.ads.gain = 1  # ±4.096V range
-            self.chan0 = AnalogIn(self.ads, ADS.P0)  # 5V/4
-            self.chan1 = AnalogIn(self.ads, ADS.P1)  # 5V/4
-            self.chan2 = AnalogIn(self.ads, ADS.P2)  # 12V/4
-            self.chan3 = AnalogIn(self.ads, ADS.P3)  # Amps
+            self.chan0 = AnalogIn(self.ads, 0)  # 5V/4
+            self.chan1 = AnalogIn(self.ads, 1)  # 5V/4
+            self.chan2 = AnalogIn(self.ads, 2)  # 12V/4
+            self.chan3 = AnalogIn(self.ads, 3)  # Amps
             self.available = True
             print("Battery sensor (ADS1115) initialized")
         except Exception as e:

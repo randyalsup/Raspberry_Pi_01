@@ -14,10 +14,10 @@ from adafruit_ads1x15.analog_in import AnalogIn
 i2c = busio.I2C(board.SCL, board.SDA)
 adc = ADS.ADS1115(i2c, address=0x48)
 
-chan0 = AnalogIn(adc, ADS.P0)
-chan1 = AnalogIn(adc, ADS.P1)
-chan2 = AnalogIn(adc, ADS.P2)
-chan3 = AnalogIn(adc, ADS.P3)
+chan0 = AnalogIn(adc, 0)
+chan1 = AnalogIn(adc, 1)
+chan2 = AnalogIn(adc, 2)
+chan3 = AnalogIn(adc, 3)
 
 print("Starting ADS1115 sampling. Press Ctrl+C to stop.")
 try:
